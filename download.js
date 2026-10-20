@@ -13,7 +13,9 @@ const zlib = require('zlib');
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-const STATIC_KEY = "77d92dd656ac3fdde472d5ba59747f42ac0ce217";
+// Fallback only: the live key is pulled from the viewer bundles on every run.
+// Last observed value (2026-10-20); Sketchfab rotates it periodically.
+const STATIC_KEY = "2cf4a19c7d4d861087fc573a30581f5f4b33b6e4";
 let WORK_DIR = path.join(__dirname, '.cache');
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────────────
@@ -207,15 +209,31 @@ async function extractStaticKey(embedHtml) {
         (embedHtml.match(/https:\/\/static\.sketchfab\.com\/static\/builds\/web\/dist\/[^"&]+\.js/g) || [])
     )];
 
+    // The key has moved between bundle shapes over time. Try each known shape,
+    // most specific first. Older builds inlined it next to the `k` export:
+    //   i.d(e,{k:()=>r});const r="<40 hex>\n"
+    // Newer builds re-export it from a standalone CommonJS module:
+    //   C04p:t=>{"use strict";t.exports="<40 hex>\n"}
+    const KEY_PATTERNS = [
+        /exports\s*\.\s*k\s*:\s*\(\)\s*=>\s*\w+\}\s*;\s*const\s+\w+\s*=\s*"([0-9a-f]{40})\\n"/,
+        /\{k:\s*\(\)\s*=>\s*\w+\}[^;]*;\s*const\s+\w+\s*=\s*"([0-9a-f]{40})/,
+        /\.exports\s*=\s*"([0-9a-f]{40})\\n"/,
+        /"([0-9a-f]{40})\\n"/,
+    ];
+
     for (const url of bundleUrls) {
         const js = (await fetch(url)).toString('utf8');
-        const match = js.match(/exports\s*\.\s*k\s*:\s*\(\)\s*=>\s*\w+\}\s*;\s*const\s+\w+\s*=\s*"([0-9a-f]{40})\\n"/);
-        if (match) return match[1];
-        const match2 = js.match(/\{k:\s*\(\)\s*=>\s*\w+\}[^;]*;\s*const\s+\w+\s*=\s*"([0-9a-f]{40})/);
-        if (match2) return match2[1];
+        for (const re of KEY_PATTERNS) {
+            const match = js.match(re);
+            if (match) {
+                console.log(`  Static key: ${match[1]} (from ${url.split('/').pop()})`);
+                return match[1];
+            }
+        }
     }
 
-    return STATIC_KEY; // fallback to hardcoded
+    console.warn(`  Static key not found in viewer bundles, falling back to hardcoded ${STATIC_KEY}`);
+    return STATIC_KEY;
 }
 
 // ─── Step 3: WASM decryption ──────────────────────────────────────────────────
